@@ -1,0 +1,18 @@
+{application, tyranny_authservice,
+ [{description, "Tyranny Authentication Service"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, { tyranny_authservice_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    sasl,
+    ranch
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.

@@ -1,0 +1,6 @@
+-sname tyranny_authservice
+
+-setcookie tyranny_authservice_cookie
+
++K true
++A30

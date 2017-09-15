@@ -1,2 +1,9 @@
-# tyranny_authservice
-Tyranny Authentication Service
+tyranny_authservice
+=====
+
+An OTP application
+
+Build
+-----
+
+    $ rebar3 compile
