@@ -22,7 +22,7 @@ start(_StartType, _StartArgs) ->
     {ok, _} = ranch:start_listener(tryanny_authservice,
 				   ranch_tcp, 
 				   [{port, Port}, {num_acceptors, NumAcceptors}, {max_connections, MaxConns}], 
-				   authservice_protocol, 
+				   auth_handler, 
 				   []),
     lager:start(),
     application:ensure_all_started (mongodb),
