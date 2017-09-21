@@ -1,9 +1,11 @@
--module(auth_handler).
+-module(authservice_handler).
 -behavior(gen_statem).
 -behavior(ranch_protocol).
 
--export([start_link/4]).
--export([init/1]).
+%% Ranch Callbacks
+-export([ start_link/4,
+	  init/1
+        ]).
 
 %% GEN_FSM Callbacks
 -export([ terminate/3, 
@@ -11,6 +13,7 @@
 	  callback_mode/0
 	]).
 
+%% State callbacks
 -export([ waiting_for_ident/3,
 	  waiting_for_proof/3,
 	  waiting_for_ack/3
@@ -94,7 +97,7 @@ waiting_for_ack(info, {tcp, _Port, <<1:32/integer>> = _RawData}, State) ->
 
     case Status of
         0 ->
-	    {ok, ServerList} = auth_gamerouter:get_servers(),
+	    {ok, ServerList} = gameservice_selection:list(),
 	    [#game_server{ext_ip=ExtIp, ext_port=ExtPort} | _] = ServerList,
 	    ExtIpBin = inet_util:ip_to_int(ExtIp),
 	    Transport:send(Socket, <<0:32/integer, ExtIpBin:32/integer, ExtPort:32/integer>>);

@@ -28,9 +28,10 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    Datasource = {auth_datasource, {auth_datasource, start, []}, permanent, 2000, worker, [auth_datasource]},
-    GameRouter = {auth_gamerouter, {auth_gamerouter, start, []}, permanent, 2000, worker, [auth_gamerouter]},
-    Children = [Datasource, GameRouter],
+    Datasource = {account_datasource, {account_datasource, start, []}, permanent, 2000, worker, [account_datasource]},
+    HelloServer = {gameservice_listener, {gameservice_listener, start_link, []}, permanent, 2000, worker, [gameservice_listener]},
+    GameRouter = {gameservice_selection, {gameservice_selection, start_link, []}, permanent, 2000, worker, [gameservice_selection]},
+    Children = [Datasource, HelloServer, GameRouter],
     RestartStrategy = {one_for_one, 10, 10},
     {ok, {RestartStrategy, Children}}.
 

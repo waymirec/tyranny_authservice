@@ -10,21 +10,25 @@
 %% Application callbacks
 -export([start/2, stop/1]).
 
+-define(config(Key), application:get_env(tyranny_authservice, Key)).
 %%====================================================================
 %% API
 %%====================================================================
 
 start(_StartType, _StartArgs) ->
-    {ok, Port} = application:get_env(tyranny_authservice, port),
-    {ok, NumAcceptors} = application:get_env(tyranny_authservice, num_acceptors),
-    {ok, MaxConns} = application:get_env(tyranny_authservice, max_connections),
-
+    lager:start(),
+    config:start_link(),
+    
+    application:start(ranch),
     {ok, _} = ranch:start_listener(tryanny_authservice,
 				   ranch_tcp, 
-				   [{port, Port}, {num_acceptors, NumAcceptors}, {max_connections, MaxConns}], 
-				   auth_handler, 
+				   [ {port, config:port()}, 
+				     {num_acceptors, config:num_acceptors()}, 
+				     {max_connections, config:max_connections()}
+				   ], 
+				   authservice_handler, 
 				   []),
-    lager:start(),
+
     application:ensure_all_started (mongodb),
     tyranny_authservice_sup:start_link().
 

@@ -12,7 +12,7 @@
 %% ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 %% OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
--module(auth_datasource).
+-module(account_datasource).
 -behavior(gen_server).
 
 -export([ init/1,
@@ -40,7 +40,7 @@ start() ->
 
 -spec stop() -> ok.
 stop() ->
-    gen_server:cast(?MODULE, shudown).
+    gen_server:cast(?MODULE, stop).
 
 -spec get_account_by_username(Username :: binary()) -> Account :: map().
 get_account_by_username(Username) when is_binary(Username) ->
@@ -59,6 +59,9 @@ handle_call({get_account_by_username, Username}, _From, #state{connection=Connec
     {reply, Result#{<<"status">> := trunc(Status)}, State}.
 
 -spec handle_cast(Request :: term(), State :: state()) -> {noreply, State :: state()}.
+handle_cast(stop, State) ->
+    {stop, requested, State};
+
 handle_cast(_Message, State) ->
     {noreply, State}.
 
