@@ -1,4 +1,4 @@
--module(gameservice_selection).
+-module(gameservice_finder).
 -behavior(gen_server).
 
 -export([ init/1,
@@ -20,8 +20,9 @@
 -define(HEALTH_TTL, 10000).
 
 -record(state, {
-	list = []				:: [game_server()],
-	update_timer				:: term()
+	list = []				:: [server_info()],
+	update_timer				:: term(),
+	db
        }).
 
 -type state() :: #state{}.
@@ -44,8 +45,15 @@ next() ->
 
 -spec init(Args :: list()) -> {ok, State :: state()}.
 init([]) ->
+    DbHost = config:key(<<"gameserver_db.host">>),
+    DbPort = config:key(<<"gameserver_db.port">>),
+    DbDatabase = config:key(<<"gameserver.db_database">>),
+    DbPassword = config:key(<<"gameserver_db.password">>),
+    ConnectTimeout = config:key(<<"gameserver_db.connect_timeout">>),
+    ReconnectDelay = config:key(<<"gameserver_db.reconnect_delay">>),
+    {ok, DbClient} = eredis:start_link(DbHost, DbPort, DbDatabase, DbPassword, ReconnectDelay, ConnectTimeout),
     {ok, TRef} = timer:send_interval(3000, self(), update),
-    State = #state{update_timer=TRef},
+    State = #state{update_timer=TRef, db=DbClient},
     {ok, State}.
 
 -spec handle_call(Request :: term(), From :: {pid(), Tag :: any()}, State :: state()) -> Result :: {reply, Reply :: term(), NewState :: state()}.
@@ -70,10 +78,9 @@ handle_cast(stop, State) ->
 
 -spec handle_info(Request :: term(), State :: state()) -> {noreply, State :: state()}.
 handle_info(update, State) ->
-    Servers = gameservice_listener:servers(),
-    List = build_game_servers(Servers),
-    Sorted = lists:sort(fun(#game_server{score=Score1}, #game_server{score=Score2}) -> Score1 =< Score2 end, List),
-    {noreply, State#state{list=Sorted}};
+    #state{db=DbClient} = State,
+    Servers = update(DbClient),
+    {noreply, State#state{list=Servers}};
 
 handle_info(Message, State) ->
     lager:debug("Ignoring message: ~p", [Message]),
@@ -87,15 +94,30 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+update(DbClient) ->
+    {ok, ServerKeys} = eredis:q(DbClient, ["KEYS", "gameservice:info:*"]),
+    ServerBins = get_server_data(DbClient, ServerKeys),
+    Servers = build_server_info(ServerBins),
+    Sorted = lists:sort(fun(#server_info{score=Score1}, #server_info{score=Score2}) -> Score1 =< Score2 end, Servers),
+    Sorted.
 
-build_game_servers([#server_info{} = ServerInfo | T]) ->
-    #server_info{id=Id, int_ip=IntIp, int_port=IntPort, ext_ip=ExtIp, ext_port=ExtPort} = ServerInfo,
-    Score = calculate_score(ServerInfo),
-    GameServer = #game_server{id=Id, int_ip=IntIp, int_port=IntPort, ext_ip=ExtIp, ext_port=ExtPort, score=Score},
-    [GameServer | build_game_servers(T)];
+get_server_data(DbClient, [Key | Rest]) ->
+    {ok, Value} = eredis:q(DbClient, ["GET", Key]),
+    [Value | get_server_data(DbClient, Rest)];
 
-build_game_servers([]) ->
+get_server_data(_DbClient, []) ->
     [].
 
-calculate_score(#server_info{} = _ServerInfo) ->
-    rand:uniform(10).
+build_server_info([ Bin | Rest ]) ->
+    << NameLength:8,
+       Name:NameLength/bitstring,
+       Ip:32,
+       Port:32,
+       Score:16
+    >> = Bin,
+    
+    Server = #server_info{id=Name, ip=inet_util:int_to_ip(Ip), port=Port, score=Score},
+    [Server | build_server_info(Rest)];
+
+build_server_info([]) ->
+  [].

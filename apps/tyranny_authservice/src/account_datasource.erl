@@ -34,6 +34,8 @@
 
 -type state() :: #state{}.
 
+-define(ACCOUNT_COLLECTION, <<"tyranny_account">>).
+
 -spec start() -> {ok, pid()} | ignore | {error, {already_started, Pid :: pid()} | term()}.
 start() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -48,13 +50,14 @@ get_account_by_username(Username) when is_binary(Username) ->
 
 -spec init(Args :: list()) -> {ok, State :: state()}.
 init([]) ->
-    {ok, Connection} = mc_worker_api:connect([{database, <<"tyranny_account">>}]),
+    DbArgs = config:key(<<"account_db">>), 
+    {ok, Connection} = mc_worker_api:connect(DbArgs),
     State = #state{connection=Connection},
     {ok, State}.
 
 -spec handle_call(Request :: term(), From :: {pid(), Tag :: any()}, State :: state()) -> Result :: {reply, Reply :: term(), NewState :: state()}.
 handle_call({get_account_by_username, Username}, _From, #state{connection=Connection} = State) ->
-    Result = mc_worker_api:find_one(Connection, <<"tyranny_account">>, #{<<"username">> => Username}, #{}), 
+    Result = mc_worker_api:find_one(Connection, ?ACCOUNT_COLLECTION, #{<<"username">> => Username}, #{}), 
     Status = maps:get(<<"status">>, Result),
     {reply, Result#{<<"status">> := trunc(Status)}, State}.
 

@@ -58,10 +58,8 @@ waiting_for_ident(info ,{tcp,_Port, <<MajorVsn:16,
 				      Username:UserNameLength/binary>> = _RawData} = _Info, 
 				      State) ->
     #state{transport=Transport, socket=Socket} = State,
-    lager:debug("Client Ident (~p): Major=~p, Minor=~p, Maint=~p, Build=~p", [Username, MajorVsn, MinorVsn, MaintVsn, Build]),
     Challenge = crypto:hash(sha, Username),
     ChallengeLenBytes = byte_size(Challenge),
-    lager:debug("Client Challenge (~p): ~p", [Username, Challenge]),
     NewState = State#state{username=Username, secret= <<"foo">>, challenge=Challenge},
     Transport:send(Socket, <<ChallengeLenBytes:16, Challenge/binary>>),
     Transport:setopts(State#state.socket, [{active, once}]),
@@ -78,7 +76,7 @@ waiting_for_ident(info, {tcp, _Port, RawData}, State) ->
 waiting_for_proof(info, {tcp,_Port,<<ProofLen:16, Proof:ProofLen/binary>> = _RawData} = _Info, State) ->
     #state{transport=Transport, socket=Socket, username=Username} = State,
     NewState = State#state{proof=Proof},
-    Account = authservice_datasource:get_account_by_username(Username),
+    Account = account_datasource:get_account_by_username(Username),
     auth_user(Account, NewState),
     Transport:setopts(Socket, [{active, once}]),
     {next_state, waiting_for_ack, NewState#state{account=Account}};
@@ -97,10 +95,12 @@ waiting_for_ack(info, {tcp, _Port, <<1:32/integer>> = _RawData}, State) ->
 
     case Status of
         0 ->
-	    {ok, ServerList} = gameservice_selection:list(),
-	    [#game_server{ext_ip=ExtIp, ext_port=ExtPort} | _] = ServerList,
-	    ExtIpBin = inet_util:ip_to_int(ExtIp),
-	    Transport:send(Socket, <<0:32/integer, ExtIpBin:32/integer, ExtPort:32/integer>>);
+	    ServerList = gameservice_finder:list(),
+	    [#server_info{ip=Ip, port=Port} | _] = ServerList,
+	    AuthToken = uuid:create(),
+	    AuthTokenLen = bit_size(AuthToken),
+	    IpBin = inet_util:ip_to_int(Ip),
+	    Transport:send(Socket, <<0:32/integer, IpBin:32/integer, Port:32/integer, AuthTokenLen:16, AuthToken:AuthTokenLen/bitstring>>);
         _ ->
 	    Transport:send(Socket, <<Status:32/integer>>)
     end,
@@ -150,12 +150,10 @@ auth_user(#{<<"passwordHash">> := PasswordHashEncoded} = _Record, State) ->
     ProofContext2 = crypto:hash_update(ProofContext1, Challenge),
     ProofContext3 = crypto:hash_update(ProofContext2, PasswordHash),
     ServerProof  = crypto:hash_final(ProofContext3),
-    lager:debug("Client Proof (~p): Client=~p, Server=~p", [Username, Proof, ServerProof]),
     validate_proof(Proof, ServerProof, State);
 
 auth_user(undefined, State) ->
     #state{transport=Transport, socket=Socket, username=Username} = State,
-    lager:debug("Unknown username: ~p", [Username]),
     Transport:send(Socket, <<0:8>>),
     {err, unknown_username};
 
@@ -168,28 +166,11 @@ auth_user(Response, State) ->
 -spec validate_proof(Proof1 :: binary(), Proof2 :: binary(), State :: state()) -> ok | {err, atom()}.
 validate_proof(Proof, Proof, State) ->
     #state{transport=Transport, socket=Socket, username=Username} = State,
-    lager:debug("Auth Success: ~p", [Username]),
     Transport:send(Socket, <<1:8>>),
     ok;
 
 validate_proof(_, _, State) ->
     #state{transport=Transport, socket=Socket}=State,
-    lager:debug("Auth failed. Invalid password.", []),
     Transport:send(Socket, <<0:8>>),
     {err, invalid_pasword}.
 
-%process_account_status(Account, <<"0">>=Status, State) ->
-%    lager:debug("user is good to go.", []),
-%    ok;
-%
-%process_account_status(Account, <<_:31/bitstring,1:1>>=Status, State) ->
-%    lager:debug("first set.", []),
-%    ok;
-%
-%process_account_status(Account, <<_:30/bitstring,1:1,_/bitstring>>=Status, State) ->
-%    lager:debug("second set.", []),
-%    ok;
-%
-%process_account_status(Account, <<_:29/bitstring,1:1,_/bitstring>>=Status, State) ->
-%    lager:debug("third set.", []),
-%    ok.
