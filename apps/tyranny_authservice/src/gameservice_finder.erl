@@ -47,7 +47,7 @@ next() ->
 init([]) ->
     DbHost = config:key(<<"gameserver_db.host">>),
     DbPort = config:key(<<"gameserver_db.port">>),
-    DbDatabase = config:key(<<"gameserver.db_database">>),
+    DbDatabase = config:key(<<"gameserver_db.database">>),
     DbPassword = config:key(<<"gameserver_db.password">>),
     ConnectTimeout = config:key(<<"gameserver_db.connect_timeout">>),
     ReconnectDelay = config:key(<<"gameserver_db.reconnect_delay">>),
@@ -95,7 +95,7 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 update(DbClient) ->
-    {ok, ServerKeys} = eredis:q(DbClient, ["KEYS", "gameservice:info:*"]),
+    {ok, ServerKeys} = eredis:q(DbClient, ["KEYS", "*"]),
     ServerBins = get_server_data(DbClient, ServerKeys),
     Servers = build_server_info(ServerBins),
     Sorted = lists:sort(fun(#server_info{score=Score1}, #server_info{score=Score2}) -> Score1 =< Score2 end, Servers),

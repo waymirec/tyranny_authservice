@@ -29,7 +29,8 @@
 	secret = <<"">>				:: binary(), 
 	challenge = <<"">>			:: binary(),
 	proof = <<"">>				:: binary(),
-	account = #{}				:: #{}
+	account = #{}				:: #{},
+	target_server				:: inet:ip_address()
        }).
 
 -type state() :: #state{}.
@@ -41,7 +42,6 @@ start_link(Ref, Socket, Transport, Opts) ->
 
 -spec init(Args :: list()) -> no_return().
 init([Ref, Socket, Transport, _Opts = []]) ->
-    %% Perform any required state initialization here
     ok = ranch:accept_ack(Ref),
     ok = Transport:setopts(Socket, [{active, once}, {packet, 4}]),
     gen_statem:enter_loop(?MODULE, [], waiting_for_ident, #state{ref=Ref, socket=Socket, transport=Transport}).
@@ -50,10 +50,10 @@ init([Ref, Socket, Transport, _Opts = []]) ->
 callback_mode() -> state_functions.
 
 -spec waiting_for_ident(info, tuple(), State :: state()) -> gen_statem:state_callback_result(gen_statem:action()).
-waiting_for_ident(info ,{tcp,_Port, <<MajorVsn:16, 
-				      MinorVsn:16, 
-				      MaintVsn:16,
-				      Build:16,
+waiting_for_ident(info ,{tcp,_Port, <<_MajorVsn:16, 
+				      _MinorVsn:16, 
+				      _MaintVsn:16,
+				      _Build:16,
 				      UserNameLength:16,
 				      Username:UserNameLength/binary>> = _RawData} = _Info, 
 				      State) ->
@@ -90,14 +90,14 @@ waiting_for_proof(info, {tcp, _Port, RawData}, State) ->
 
 -spec waiting_for_ack(info, tuple(), State :: state()) -> gen_statem:state_callback_result(gen_statem:action()).
 waiting_for_ack(info, {tcp, _Port, <<1:32/integer>> = _RawData}, State) ->
-    #state{transport=Transport, socket=Socket, account=Account} = State,
+    #state{transport=Transport, socket=Socket, account=Account, username=UserName} = State,
     Status = maps:get(<<"status">>, Account),
 
     case Status of
         0 ->
 	    ServerList = gameservice_finder:list(),
 	    [#server_info{ip=Ip, port=Port} | _] = ServerList,
-	    AuthToken = uuid:create(),
+	    AuthToken = authtoken_manager:create(UserName, Ip),
 	    AuthTokenLen = bit_size(AuthToken),
 	    IpBin = inet_util:ip_to_int(Ip),
 	    Transport:send(Socket, <<0:32/integer, IpBin:32/integer, Port:32/integer, AuthTokenLen:16, AuthToken:AuthTokenLen/bitstring>>);
@@ -106,18 +106,6 @@ waiting_for_ack(info, {tcp, _Port, <<1:32/integer>> = _RawData}, State) ->
     end,
     Transport:setopts(State#state.socket, [{active,once}]),
     {stop, normal, State};
-
-%	<<StatusBin/binary>> = <<Status:32/integer>>,
-%	process_account_status(Account, StatusBin, State),
-%	case <<Status:32>> of
-%	    <<0:32>> ->
-%		lager:debug("user is good to go.", []),
-%		{ip=Ip,port=Port} = authservice_lb:get_server(),
-%	 	Transport:send(Socket, <<Status:32,Ip:32,Port:32>>);
-%	    <<1:1, _Rest/bitstring>> ->
-%		lager:debug("do not pass go.", []),
-%		Transport:send(Socket, <<Status:32>>)
-%	end,
 
 waiting_for_ack(info, {tcp_closed, _Port}, State) ->
     socket_closed(waiting_for_ready, State),
@@ -144,7 +132,7 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 -spec auth_user(Account :: map(), State :: state()) -> Ignored :: any().
 auth_user(#{<<"passwordHash">> := PasswordHashEncoded} = _Record, State) ->
-    #state{challenge=Challenge, proof=Proof, username=Username}=State,
+    #state{challenge=Challenge, proof=Proof}=State,
     PasswordHash = base64:decode(PasswordHashEncoded),
     ProofContext1 = crypto:hash_init(sha256),
     ProofContext2 = crypto:hash_update(ProofContext1, Challenge),
@@ -153,7 +141,7 @@ auth_user(#{<<"passwordHash">> := PasswordHashEncoded} = _Record, State) ->
     validate_proof(Proof, ServerProof, State);
 
 auth_user(undefined, State) ->
-    #state{transport=Transport, socket=Socket, username=Username} = State,
+    #state{transport=Transport, socket=Socket} = State,
     Transport:send(Socket, <<0:8>>),
     {err, unknown_username};
 
@@ -165,7 +153,7 @@ auth_user(Response, State) ->
 
 -spec validate_proof(Proof1 :: binary(), Proof2 :: binary(), State :: state()) -> ok | {err, atom()}.
 validate_proof(Proof, Proof, State) ->
-    #state{transport=Transport, socket=Socket, username=Username} = State,
+    #state{transport=Transport, socket=Socket} = State,
     Transport:send(Socket, <<1:8>>),
     ok;
 
