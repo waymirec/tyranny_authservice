@@ -1,6 +1,6 @@
 -module(uuid).
 
--export([ create/0 ]).
+-export([create/0]).
 
 create() ->
   <<A:32, B:16, C:16, D:16, E:48>> = crypto:strong_rand_bytes(16),

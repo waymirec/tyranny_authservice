@@ -1,5 +1,9 @@
 *.jar
+*.iml
+rebar3
 _build/
 log/
 rebar.lock
-
+.idea
+.DS_Store
+Dockerfile.*
