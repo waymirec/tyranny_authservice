@@ -23,10 +23,10 @@
 
 -record(state, {
   ref :: ranch:ref(), % provided by ranch
+  client_id :: binary(),
   socket :: gen_udp:socket(), % udp socket
   transport :: module(), % ranch Transport (tcp, udp, ssl, etc)
   username = <<"">> :: binary(),
-  secret = <<"">> :: binary(),
   challenge = <<"">> :: binary(),
   proof = <<"">> :: binary(),
   account = #{} :: #{},
@@ -42,10 +42,12 @@ start_link(Ref, Socket, Transport, Opts) ->
 
 -spec init(Args :: list()) -> no_return().
 init([Ref, Socket, Transport, _Opts = []]) ->
-  lager:info("Connection accepted.", []),
+  {ok, {IpAddress, Port}} = inet:peername(Socket),
+  ClientId = list_to_binary(io_lib:format("~s:~p", [inet:ntoa(IpAddress), Port])),
+  lager:info("[~s] Connection accepted from client ~s:~p", [ClientId, inet:ntoa(IpAddress), Port]),
   ok = ranch:accept_ack(Ref),
   ok = Transport:setopts(Socket, [{active, once}, {packet, 4}]),
-  gen_statem:enter_loop(?MODULE, [], waiting_for_ident, #state{ref = Ref, socket = Socket, transport = Transport}).
+  gen_statem:enter_loop(?MODULE, [], waiting_for_ident, #state{ref = Ref, socket = Socket, transport = Transport, client_id = ClientId}).
 
 -spec callback_mode() -> atom().
 callback_mode() -> state_functions.
@@ -58,53 +60,66 @@ waiting_for_ident(info, {tcp, _Port, <<MajorVsn:16,
   UserNameLength:16,
   Username:UserNameLength/binary>> = _RawData} = _Info,
     State) ->
-  #state{transport = Transport, socket = Socket} = State,
-  lager:debug("Received Ident: Major=[~p], Minor=[~p], Maint=[~p], Build=[~p], Username=[~p]", [MajorVsn, MinorVsn, MaintVsn, Build, Username]),
+  #state{client_id = ClientId, transport = Transport, socket = Socket} = State,
+  lager:debug("[~s] Received ident: Major=[~p], Minor=[~p], Maint=[~p], Build=[~p], Username=[~p]", [ClientId, MajorVsn, MinorVsn, MaintVsn, Build, Username]),
   Challenge = crypto:hash(sha, Username),
   ChallengeLenBytes = byte_size(Challenge),
-  lager:debug("Challenge: !~s!", [[io_lib:format("~2.16.0B", [X]) || <<X:8>> <= Challenge]]),
-  NewState = State#state{username = Username, secret = <<"foo">>, challenge = Challenge},
+  lager:debug("[~s] Generated challenge: ~s", [ClientId, [io_lib:format("~2.16.0B", [X]) || <<X:8>> <= Challenge]]),
+  NewState = State#state{username = Username, challenge = Challenge},
 
   Transport:send(Socket, <<ChallengeLenBytes:16, Challenge/binary>>),
   Transport:setopts(State#state.socket, [{active, once}]),
   {next_state, waiting_for_proof, NewState};
 
-waiting_for_ident(info, {tcp_closed, _Port}, State) ->
-  lager:info("Socket closed.", []),
+waiting_for_ident(info, {tcp_closed, _Port}, #state{client_id = ClientId} = State) ->
+  lager:info("[~s] Socket closed.", [ClientId]),
   socket_closed(waiting_for_ident, State),
   {stop, {err, socket_closed}, State};
 
-waiting_for_ident(info, {tcp, _Port, RawData}, State) ->
-  lager:info("Unexpected data.", []),
+waiting_for_ident(info, {tcp, _Port, RawData}, #state{client_id = ClientId} = State) ->
+  lager:info("[~s] Received unexpected data: ~p.", [ClientId, RawData]),
   {stop, {err, {unexpected, RawData}}, State}.
 
 -spec waiting_for_proof(info, tuple(), State :: state()) -> gen_statem:state_callback_result(gen_statem:action()).
 waiting_for_proof(info, {tcp, _Port, <<ProofLen:16, Proof:ProofLen/binary>> = _RawData} = _Info, State) ->
-  #state{transport = Transport, socket = Socket, username = Username} = State,
-  lager:debug("Received proof: ~s", [[io_lib:format("~2.16.0B", [X]) || <<X:8>> <= Proof]]),
+  #state{client_id = ClientId, transport = Transport, socket = Socket, username = Username} = State,
+  lager:debug("[~s] Received proof: ~s", [ClientId, [io_lib:format("~2.16.0B", [X]) || <<X:8>> <= Proof]]),
   NewState = State#state{proof = Proof},
   Account = account_datasource:get_account_by_username(Username),
-  ok = auth_user(Account, NewState),
-  Transport:setopts(Socket, [{active, once}]),
-  {next_state, waiting_for_ack, NewState#state{account = Account}};
 
-waiting_for_proof(info, {tcp_closed, _Port}, State) ->
+  case auth_user(Account, NewState) of
+    ok ->
+      lager:debug("[~s] User successfully authenticated", [ClientId]),
+      Transport:setopts(Socket, [{active, once}]),
+      {next_state, waiting_for_ack, NewState#state{account = Account}};
+    {err, Reason} ->
+      lager:debug("[~s] User failed to authenticate: ~s", [ClientId, Reason]),
+      {stop, {err, Reason}, State}
+  end;
+
+waiting_for_proof(info, {tcp_closed, _Port}, #state{client_id = ClientId} = State) ->
+  lager:debug("[~s] Socket closed waiting for proof", [ClientId]),
   socket_closed(waiting_for_proof, State),
   {stop, {err, socket_closed}, State};
 
-waiting_for_proof(info, {tcp, _Port, RawData}, State) ->
+waiting_for_proof(info, {tcp, _Port, RawData}, #state{client_id = ClientId} = State) ->
+  lager:debug("[~s] Received unexpected data while waiting for proof: ~p", [ClientId, RawData]),
   {stop, {err, {unexpected, RawData}}, State}.
 
 -spec waiting_for_ack(info, tuple(), State :: state()) -> gen_statem:state_callback_result(gen_statem:action()).
 waiting_for_ack(info, {tcp, _Port, <<1:32/integer>> = _RawData}, State) ->
-  #state{transport = Transport, socket = Socket, account = Account, username = UserName} = State,
+  #state{client_id = ClientId, transport = Transport, socket = Socket, account = Account, username = UserName} = State,
+  lager:debug("[~s] Received ack from client", [ClientId]),
   Status = maps:get(<<"status">>, Account),
+
+  lager:debug("[~s] Account status is '~p'", [ClientId, Status]),
 
   case Status of
     0 ->
       ServerList = gameservice_finder:list(),
       [#server_info{ip = Ip, port = Port} | _] = ServerList,
       AuthToken = authtoken_manager:create(UserName, Ip),
+      lager:debug("[~s] Generated auth token [~s] for server [~s]", [ClientId, AuthToken, inet_util:ip_to_bin(Ip)]),
       AuthTokenLen = byte_size(AuthToken),
       IpBin = inet_util:ip_to_int(Ip),
       Transport:send(Socket, <<0:32/integer, IpBin:32/integer, Port:32/integer, AuthTokenLen:16, AuthToken/binary>>);
@@ -114,23 +129,26 @@ waiting_for_ack(info, {tcp, _Port, <<1:32/integer>> = _RawData}, State) ->
   Transport:setopts(State#state.socket, [{active, once}]),
   {stop, normal, State};
 
-waiting_for_ack(info, {tcp_closed, _Port}, State) ->
-  socket_closed(waiting_for_ready, State),
+waiting_for_ack(info, {tcp_closed, _Port}, #state{client_id = ClientId} = State) ->
+  lager:debug("[~s] Socket closed waiting for ack", [ClientId]),
+  socket_closed(waiting_for_ack, State),
   {stop, {err, socket_closed}, State};
 
-waiting_for_ack(info, {tcp, _Port, RawData}, State) ->
-  {stop, {unexpected_ready, RawData}, State}.
+waiting_for_ack(info, {tcp, _Port, RawData}, #state{client_id = ClientId} = State) ->
+  lager:debug("[~s] Received unexpected data while waiting for ack: ~p", [ClientId, RawData]),
+  {stop, {unexpected, RawData}, State}.
 
 -spec socket_closed(StateName :: binary() | list(), State :: state()) -> ok.
 socket_closed(StateName, State) ->
-  #state{transport = Transport, socket = Socket} = State,
-  lager:debug("StateName=~p, Connection closed by remote side.", [StateName]),
-  lager:debug("Transport: ~p, Socket: ~p", [Transport, Socket]),
+  #state{client_id = ClientId, transport = Transport, socket = Socket} = State,
+  lager:debug("[~s] StateName=~p, Connection closed by remote side.", [ClientId, StateName]),
+  lager:debug("[~s] Transport: ~p, Socket: ~p", [ClientId, Transport, Socket]),
   Transport:close(Socket),
   ok.
 
 -spec terminate(Reason :: normal | shutdown | {shutdown, term()} | term(), StateName :: gen_statem:state(), State :: state()) -> ok.
-terminate(_Reason, _StateName, _State) ->
+terminate(_Reason, _StateName, #state{client_id = ClientId} = State) ->
+  lager:debug("[~s] Terminating handler", [ClientId]),
   ok.
 
 -spec code_change(OldVsn :: term() | {down, term()}, OldState :: term(), OldData :: gen_statem:state(), Extra :: term()) -> {ok, term(), gen_statem:data()} | term().
@@ -139,14 +157,13 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 
 -spec auth_user(Account :: map(), State :: state()) -> Ignored :: any().
 auth_user(#{<<"passwordHash">> := PasswordHashEncoded} = _Record, State) ->
-  #state{challenge = Challenge, proof = Proof} = State,
+  #state{client_id = ClientId, challenge = Challenge, proof = Proof} = State,
   PasswordHash = hex_to_bin(binary_to_list(base64:decode(PasswordHashEncoded))),
-  lager:debug("Password Hash: !~s!", [PasswordHash]),
   ProofContext1 = crypto:hash_init(sha256),
   ProofContext2 = crypto:hash_update(ProofContext1, Challenge),
   ProofContext3 = crypto:hash_update(ProofContext2, PasswordHash),
   ServerProof = crypto:hash_final(ProofContext3),
-  lager:debug("Server proof: ~s", [[io_lib:format("~2.16.0B", [X]) || <<X:8>> <= ServerProof]]),
+  lager:debug("[~s] Generated server proof: ~s", [ClientId, [io_lib:format("~2.16.0B", [X]) || <<X:8>> <= ServerProof]]),
   validate_proof(Proof, ServerProof, State);
 
 auth_user(undefined, State) ->
@@ -155,19 +172,21 @@ auth_user(undefined, State) ->
   {err, unknown_username};
 
 auth_user(Response, State) ->
-  #state{transport = Transport, socket = Socket, username = Username} = State,
-  lager:debug("Unexpected response retrieving user '~p': ~p", [Username, Response]),
+  #state{client_id = ClientId, transport = Transport, socket = Socket, username = Username} = State,
+  lager:debug("[~s] Unexpected response retrieving user '~p': ~p", [ClientId, Username, Response]),
   Transport:send(Socket, <<0:8>>),
   {err, unexpected_response}.
 
 -spec validate_proof(Proof1 :: binary(), Proof2 :: binary(), State :: state()) -> ok | {err, atom()}.
 validate_proof(Proof, Proof, State) ->
-  #state{transport = Transport, socket = Socket} = State,
+  #state{client_id = ClientId, transport = Transport, socket = Socket} = State,
+  lager:debug("[~s] Password is valid", [ClientId]),
   Transport:send(Socket, <<1:8>>),
   ok;
 
 validate_proof(_, _, State) ->
-  #state{transport = Transport, socket = Socket} = State,
+  #state{client_id = ClientId, transport = Transport, socket = Socket} = State,
+  lager:debug("[~s] Password is invalid", [ClientId]),
   Transport:send(Socket, <<0:8>>),
   {err, invalid_pasword}.
 

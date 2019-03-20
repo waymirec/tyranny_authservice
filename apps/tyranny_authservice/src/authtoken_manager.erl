@@ -43,7 +43,6 @@ handle_call({create, UserName, ServerIp}, _From, State) ->
   ServerIpBin = inet_util:ip_to_int(ServerIp),
   Data = <<UserNameLength:8, UserName:UserNameLength/binary, ServerIpBin:32>>,
   Token = uuid:create(),
-  lager:debug("Writing token [~p]: ~p", [Token, Data]),
   {ok, <<"OK">>} = eredis:q(DbClient, ["SET", Token, Data]),
   {ok, _} = eredis:q(DbClient, ["EXPIRE", Token, TTL]),
   {reply, Token, State};
