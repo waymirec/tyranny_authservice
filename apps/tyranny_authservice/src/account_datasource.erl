@@ -57,9 +57,14 @@ init([]) ->
 
 -spec handle_call(Request :: term(), From :: {pid(), Tag :: any()}, State :: state()) -> Result :: {reply, Reply :: term(), NewState :: state()}.
 handle_call({get_account_by_username, Username}, _From, #state{connection = Connection} = State) ->
-  Result = mc_worker_api:find_one(Connection, ?ACCOUNT_COLLECTION, #{<<"username">> => Username}, #{}),
-  Status = maps:get(<<"status">>, Result),
-  {reply, Result#{<<"status">> := trunc(Status)}, State}.
+  case mc_worker_api:find_one(Connection, ?ACCOUNT_COLLECTION, #{<<"username">> => Username}, #{}) of
+    #{} ->
+      Result = mc_worker_api:find_one(Connection, ?ACCOUNT_COLLECTION, #{<<"username">> => Username}, #{}),
+      Status = maps:get(<<"status">>, Result),
+      {reply, Result#{<<"status">> := trunc(Status)}, State};
+    _ ->
+      {reply, undefined, State}
+  end.
 
 -spec handle_cast(Request :: term(), State :: state()) -> {noreply, State :: state()}.
 handle_cast(stop, State) ->
