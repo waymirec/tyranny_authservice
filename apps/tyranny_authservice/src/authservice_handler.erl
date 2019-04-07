@@ -119,13 +119,16 @@ waiting_for_ack(info, {tcp, _Port, <<?OP_PROOF_ACK_ACK, 1:32/integer>> = _RawDat
 
   case Status of
     0 ->
-      ServerList = gameservice_finder:list(),
-      [#server_info{ip = Ip, port = Port} | _] = ServerList,
-      AuthToken = authtoken_manager:create(UserName, Ip),
-      lager:debug("[~s] Generated auth token [~s] for server [~s]", [ClientId, AuthToken, inet_util:ip_to_bin(Ip)]),
-      AuthTokenLen = byte_size(AuthToken),
-      IpBin = inet_util:ip_to_int(Ip),
-      Transport:send(Socket, <<?OP_AUTH_CMP, 0:32/integer, IpBin:32/integer, Port:32/integer, AuthTokenLen:16, AuthToken/binary>>);
+      case gameservice_finder:list() of
+        [#server_info{ip = Ip, port = Port} | _] ->
+          AuthToken = authtoken_manager:create(UserName, Ip),
+          lager:debug("[~s] Generated auth token [~s] for server [~s]", [ClientId, AuthToken, inet_util:ip_to_bin(Ip)]),
+          AuthTokenLen = byte_size(AuthToken),
+          IpBin = inet_util:ip_to_int(Ip),
+          Transport:send(Socket, <<?OP_AUTH_CMP, 0:32/integer, IpBin:32/integer, Port:32/integer, AuthTokenLen:16, AuthToken/binary>>);
+        [] ->
+          Transport:send(Socket, <<?OP_AUTH_CMP, 999:32/integer>>)
+      end;
     _ ->
       Transport:send(Socket, <<?OP_AUTH_CMP, Status:32/integer>>)
   end,
