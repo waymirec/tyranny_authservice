@@ -156,7 +156,7 @@ socket_closed(StateName, State) ->
   ok.
 
 -spec terminate(Reason :: normal | shutdown | {shutdown, term()} | term(), StateName :: gen_statem:state(), State :: state()) -> ok.
-terminate(_Reason, _StateName, #state{client_id = ClientId} = State) ->
+terminate(_Reason, _StateName, #state{client_id = ClientId} = _State) ->
   lager:debug("[~s] Terminating handler", [ClientId]),
   ok.
 
@@ -167,6 +167,7 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 -spec auth_user(Account :: map(), State :: state()) -> Ignored :: any().
 auth_user(#{<<"passwordHash">> := PasswordHashEncoded} = _Record, State) ->
   #state{client_id = ClientId, challenge = Challenge, proof = Proof} = State,
+  lager:debug("[~s] Password Hash: ~p", [ClientId, PasswordHashEncoded]),
   PasswordHash = hex_to_bin(binary_to_list(base64:decode(PasswordHashEncoded))),
   ProofContext1 = crypto:hash_init(sha256),
   ProofContext2 = crypto:hash_update(ProofContext1, Challenge),
